@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 DEFAULT_START_URL = "https://google.com"
 DEFAULT_VIEWPORT = (1280, 900)
 RUN_ID_PATTERN = re.compile(r"^run_(\d{4})$")
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 
 def timestamp_now() -> str:
@@ -174,8 +174,48 @@ def open_trace_viewer(trace_path: Path) -> None:
     subprocess.Popen([sys.executable, "-m", "playwright", "show-trace", str(trace_path)])
 
 
+def prompt_for_task_name_macos() -> str | None:
+    """Use a native macOS dialog to collect the task name."""
+    while True:
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                "try",
+                "-e",
+                'text returned of (display dialog "Name this task / output folder:" '
+                'default answer "" with title "Human Browser Trajectory Recorder" '
+                'buttons {"Cancel", "Start Recording"} default button "Start Recording")',
+                "-e",
+                "on error number -128",
+                "-e",
+                'return "__CANCELLED__"',
+                "-e",
+                "end try",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "osascript failed")
+
+        task_name = result.stdout.strip()
+        if task_name == "__CANCELLED__":
+            return None
+        if task_name:
+            return task_name
+
+
 def prompt_for_task_name() -> str | None:
     """Ask the user for a task name with a small dialog, or fall back to the terminal."""
+    if sys.platform == "darwin":
+        try:
+            return prompt_for_task_name_macos()
+        except Exception as exc:
+            print(f"Warning: macOS task-name dialog unavailable: {exc}")
+
     try:
         import tkinter as tk
         from tkinter import ttk

@@ -8,7 +8,7 @@ README = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
 
 setup(
     name="human-browser-trajectory-recorder",
-    version="0.2.0",
+    version="0.2.1",
     description="CLI for recording human browser trajectories as Playwright traces",
     long_description=README,
     long_description_content_type="text/markdown",
