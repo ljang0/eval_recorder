@@ -24,7 +24,7 @@ Use the default start URL:
 human-browser-recorder
 ```
 
-When the command starts, it asks for the task name in the terminal before the browser launches. That task name is included in the output folder, for example `runs/run_0007_checkout-flow/`.
+When the command starts, it asks for the task name in the terminal before the browser launches. The default start page is now `about:blank`, which avoids immediately hitting Google or another site that may challenge automated browsers. The task name is included in the output folder, for example `runs/run_0008_checkout-flow/`.
 
 Start from a specific page:
 
@@ -46,6 +46,12 @@ human-browser-recorder \
   --start-url https://example.com \
   --viewport 1440x960 \
   --show-trace
+```
+
+If you explicitly want Google, pass it yourself:
+
+```bash
+human-browser-recorder --task-name "gmail lookup" https://www.google.com
 ```
 
 ## Stop Recording
@@ -70,6 +76,20 @@ Open a saved trace manually:
 ```bash
 playwright show-trace runs/run_0001_example-task/trace.zip
 ```
+
+## Local Runs Viewer
+
+Use the built-in local dashboard to browse runs, inspect metadata, and launch traces:
+
+```bash
+human-browser-viewer
+```
+
+That opens a local page with:
+
+- `Open CLI Viewer` to launch `playwright show-trace`
+- `Open Web Viewer` to try Playwright's browser-based viewer against the local trace file
+- `Download Trace` to save the raw `trace.zip`
 
 ## Build
 

@@ -16,10 +16,16 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 
-DEFAULT_START_URL = "https://google.com"
+DEFAULT_START_URL = "about:blank"
 DEFAULT_VIEWPORT = (1280, 900)
-RUN_ID_PATTERN = re.compile(r"^run_(\d{4})$")
-VERSION = "0.2.2"
+RUN_ID_PATTERN = re.compile(r"^run_(\d{4})(?:$|_.+)")
+VERSION = "0.3.0"
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+window.chrome = window.chrome || { runtime: {} };
+"""
 
 
 def timestamp_now() -> str:
@@ -158,13 +164,17 @@ def save_metadata(
 
 def launch_browser(playwright):
     """Launch Chrome when available and otherwise fall back to Chromium."""
+    launch_kwargs = {
+        "headless": False,
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
     try:
-        browser = playwright.chromium.launch(channel="chrome", headless=False)
+        browser = playwright.chromium.launch(channel="chrome", **launch_kwargs)
         print("Browser channel: chrome")
         return browser
     except PlaywrightError as exc:
         print(f"Chrome launch unavailable ({exc}). Falling back to bundled Chromium.")
-        browser = playwright.chromium.launch(headless=False)
+        browser = playwright.chromium.launch(**launch_kwargs)
         print("Browser channel: chromium")
         return browser
 
@@ -241,6 +251,8 @@ def main() -> int:
     print()
     print("A browser window will open.")
     print("Use it normally.")
+    if "google." in args.start_url:
+        print("Note: Google may still challenge automated browsers. Starting from about:blank is safer.")
     print()
     print("Press ESC anywhere when you finish the task.")
     print()
@@ -248,7 +260,12 @@ def main() -> int:
     try:
         playwright = sync_playwright().start()
         browser = launch_browser(playwright)
-        context = browser.new_context(viewport={"width": args.viewport[0], "height": args.viewport[1]})
+        context = browser.new_context(
+            viewport={"width": args.viewport[0], "height": args.viewport[1]},
+            locale="en-US",
+            color_scheme="light",
+        )
+        context.add_init_script(STEALTH_INIT_SCRIPT)
 
         # Record screenshots, DOM snapshots, and sources so the trace can be replayed later.
         context.tracing.start(screenshots=True, snapshots=True, sources=True)

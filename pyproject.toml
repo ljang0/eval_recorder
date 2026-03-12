@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "human-browser-trajectory-recorder"
-version = "0.2.2"
+version = "0.3.0"
 description = "CLI for recording human browser trajectories as Playwright traces"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,7 @@ dependencies = ["playwright>=1.40,<2", "pynput>=1.7,<2"]
 
 [project.scripts]
 human-browser-recorder = "human_browser_trajectory_recorder:main"
+human-browser-viewer = "human_browser_runs_viewer:main"
 
 [tool.setuptools]
-py-modules = ["human_browser_trajectory_recorder"]
+py-modules = ["human_browser_trajectory_recorder", "human_browser_runs_viewer"]
