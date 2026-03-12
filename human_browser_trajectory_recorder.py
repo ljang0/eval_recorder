@@ -178,27 +178,75 @@ def prompt_for_task_name() -> str | None:
     """Ask the user for a task name with a small dialog, or fall back to the terminal."""
     try:
         import tkinter as tk
-        from tkinter import simpledialog
+        from tkinter import ttk
 
+        result = {"task_name": None}
         root = tk.Tk()
-        root.withdraw()
+        root.title("Human Browser Trajectory Recorder")
+        root.resizable(False, False)
         root.attributes("-topmost", True)
-        root.update()
 
-        while True:
-            task_name = simpledialog.askstring(
-                "Human Browser Trajectory Recorder",
-                "Name this task / output folder:",
-                parent=root,
-            )
-            if task_name is None:
-                root.destroy()
-                return None
-            task_name = task_name.strip()
-            if task_name:
-                root.destroy()
-                return task_name
-    except Exception:
+        width = 460
+        height = 160
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        pos_x = max((screen_width - width) // 2, 0)
+        pos_y = max((screen_height - height) // 3, 0)
+        root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
+
+        container = ttk.Frame(root, padding=16)
+        container.pack(fill="both", expand=True)
+
+        ttk.Label(
+            container,
+            text="Name this task / output folder:",
+        ).pack(anchor="w")
+
+        entry_var = tk.StringVar()
+        entry = ttk.Entry(container, textvariable=entry_var, width=52)
+        entry.pack(fill="x", pady=(8, 6))
+
+        status_label = ttk.Label(container, foreground="red")
+        status_label.pack(anchor="w")
+
+        button_row = ttk.Frame(container)
+        button_row.pack(fill="x", pady=(12, 0))
+
+        def finish(task_name: str | None) -> None:
+            result["task_name"] = task_name
+            root.quit()
+
+        def submit(*_args) -> None:
+            task_name = entry_var.get().strip()
+            if not task_name:
+                status_label.config(text="Task name cannot be empty.")
+                return
+            finish(task_name)
+
+        def cancel(*_args) -> None:
+            finish(None)
+
+        ttk.Button(button_row, text="Cancel", command=cancel).pack(side="right")
+        ttk.Button(button_row, text="Start Recording", command=submit).pack(side="right", padx=(0, 8))
+
+        root.protocol("WM_DELETE_WINDOW", cancel)
+        root.bind("<Return>", submit)
+        root.bind("<Escape>", cancel)
+
+        # Delay focus/lift slightly so macOS brings the dialog to the foreground.
+        def focus_dialog() -> None:
+            root.lift()
+            root.focus_force()
+            entry.focus_set()
+            entry.icursor("end")
+
+        root.after(100, focus_dialog)
+        root.mainloop()
+        root.destroy()
+        if result["task_name"] is not None:
+            return result["task_name"]
+    except Exception as exc:
+        print(f"Warning: GUI task-name dialog unavailable: {exc}")
         pass
 
     while True:
