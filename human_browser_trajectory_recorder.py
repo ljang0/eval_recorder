@@ -17,7 +17,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 
-DEFAULT_START_URL = "about:blank"
+DEFAULT_START_URL = "https://www.google.com"
 DEFAULT_VIEWPORT = (1280, 900)
 RUN_ID_PATTERN = re.compile(r"^run_(\d{4})(?:$|_.+)")
 VERSION = "0.5.0"
@@ -355,7 +355,7 @@ def main() -> int:
     else:
         print("Profile mode: ephemeral clean context")
     if "google." in args.start_url:
-        print("Note: Google may still challenge automated browsers. Starting from about:blank is safer.")
+        print("Note: Google may still challenge automated browsers, especially in clean profiles.")
     print()
     print("Press ESC anywhere when you finish the task.")
     print()

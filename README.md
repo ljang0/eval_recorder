@@ -24,7 +24,7 @@ Use the default start URL:
 human-browser-recorder
 ```
 
-When the command starts, it asks for the task name in the terminal before the browser launches. The default start page is now `about:blank`, which avoids immediately hitting Google or another site that may challenge automated browsers. The task name is included in the output folder, for example `runs/run_0008_checkout-flow/`.
+When the command starts, it asks for the task name in the terminal before the browser launches. The default start page is `https://www.google.com`. The task name is included in the output folder, for example `runs/run_0008_checkout-flow/`.
 
 For a more normal browser session, use a persistent profile:
 
@@ -66,10 +66,10 @@ human-browser-recorder \
   --show-trace
 ```
 
-If you explicitly want Google, pass it yourself:
+If you want to avoid Google for a run, override the start page:
 
 ```bash
-human-browser-recorder --task-name "gmail lookup" https://www.google.com
+human-browser-recorder --task-name "search results review" about:blank
 ```
 
 ## Stop Recording
