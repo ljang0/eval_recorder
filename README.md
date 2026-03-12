@@ -68,7 +68,7 @@ runs/
 Open a saved trace manually:
 
 ```bash
-playwright show-trace runs/run_0001/trace.zip
+playwright show-trace runs/run_0001_example-task/trace.zip
 ```
 
 ## Build
