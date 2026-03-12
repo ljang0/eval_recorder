@@ -24,7 +24,7 @@ Use the default start URL:
 human-browser-recorder
 ```
 
-When the command starts, it opens a task-name dialog before the browser launches. On macOS it uses a native dialog; other systems fall back to a small Tk window. That task name is included in the output folder, for example `runs/run_0007_checkout-flow/`.
+When the command starts, it asks for the task name in the terminal before the browser launches. That task name is included in the output folder, for example `runs/run_0007_checkout-flow/`.
 
 Start from a specific page:
 

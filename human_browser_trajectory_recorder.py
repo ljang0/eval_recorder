@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 DEFAULT_START_URL = "https://google.com"
 DEFAULT_VIEWPORT = (1280, 900)
 RUN_ID_PATTERN = re.compile(r"^run_(\d{4})$")
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 
 def timestamp_now() -> str:
@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task-name",
-        help="Task name used in the output folder and metadata. If omitted, a prompt appears.",
+        help="Task name used in the output folder and metadata. If omitted, a terminal prompt appears.",
     )
     parser.add_argument(
         "--show-trace",
@@ -174,121 +174,8 @@ def open_trace_viewer(trace_path: Path) -> None:
     subprocess.Popen([sys.executable, "-m", "playwright", "show-trace", str(trace_path)])
 
 
-def prompt_for_task_name_macos() -> str | None:
-    """Use a native macOS dialog to collect the task name."""
-    while True:
-        result = subprocess.run(
-            [
-                "osascript",
-                "-e",
-                "try",
-                "-e",
-                'text returned of (display dialog "Name this task / output folder:" '
-                'default answer "" with title "Human Browser Trajectory Recorder" '
-                'buttons {"Cancel", "Start Recording"} default button "Start Recording")',
-                "-e",
-                "on error number -128",
-                "-e",
-                'return "__CANCELLED__"',
-                "-e",
-                "end try",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "osascript failed")
-
-        task_name = result.stdout.strip()
-        if task_name == "__CANCELLED__":
-            return None
-        if task_name:
-            return task_name
-
-
 def prompt_for_task_name() -> str | None:
-    """Ask the user for a task name with a small dialog, or fall back to the terminal."""
-    if sys.platform == "darwin":
-        try:
-            return prompt_for_task_name_macos()
-        except Exception as exc:
-            print(f"Warning: macOS task-name dialog unavailable: {exc}")
-
-    try:
-        import tkinter as tk
-        from tkinter import ttk
-
-        result = {"task_name": None}
-        root = tk.Tk()
-        root.title("Human Browser Trajectory Recorder")
-        root.resizable(False, False)
-        root.attributes("-topmost", True)
-
-        width = 460
-        height = 160
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        pos_x = max((screen_width - width) // 2, 0)
-        pos_y = max((screen_height - height) // 3, 0)
-        root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
-
-        container = ttk.Frame(root, padding=16)
-        container.pack(fill="both", expand=True)
-
-        ttk.Label(
-            container,
-            text="Name this task / output folder:",
-        ).pack(anchor="w")
-
-        entry_var = tk.StringVar()
-        entry = ttk.Entry(container, textvariable=entry_var, width=52)
-        entry.pack(fill="x", pady=(8, 6))
-
-        status_label = ttk.Label(container, foreground="red")
-        status_label.pack(anchor="w")
-
-        button_row = ttk.Frame(container)
-        button_row.pack(fill="x", pady=(12, 0))
-
-        def finish(task_name: str | None) -> None:
-            result["task_name"] = task_name
-            root.quit()
-
-        def submit(*_args) -> None:
-            task_name = entry_var.get().strip()
-            if not task_name:
-                status_label.config(text="Task name cannot be empty.")
-                return
-            finish(task_name)
-
-        def cancel(*_args) -> None:
-            finish(None)
-
-        ttk.Button(button_row, text="Cancel", command=cancel).pack(side="right")
-        ttk.Button(button_row, text="Start Recording", command=submit).pack(side="right", padx=(0, 8))
-
-        root.protocol("WM_DELETE_WINDOW", cancel)
-        root.bind("<Return>", submit)
-        root.bind("<Escape>", cancel)
-
-        # Delay focus/lift slightly so macOS brings the dialog to the foreground.
-        def focus_dialog() -> None:
-            root.lift()
-            root.focus_force()
-            entry.focus_set()
-            entry.icursor("end")
-
-        root.after(100, focus_dialog)
-        root.mainloop()
-        root.destroy()
-        if result["task_name"] is not None:
-            return result["task_name"]
-    except Exception as exc:
-        print(f"Warning: GUI task-name dialog unavailable: {exc}")
-        pass
-
+    """Ask the user for a task name in the terminal."""
     while True:
         try:
             task_name = input("Task name for this run: ").strip()
