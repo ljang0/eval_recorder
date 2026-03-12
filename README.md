@@ -26,6 +26,24 @@ human-browser-recorder
 
 When the command starts, it asks for the task name in the terminal before the browser launches. The default start page is now `about:blank`, which avoids immediately hitting Google or another site that may challenge automated browsers. The task name is included in the output folder, for example `runs/run_0008_checkout-flow/`.
 
+For a more normal browser session, use a persistent profile:
+
+```bash
+human-browser-recorder --profile-dir profiles/default
+```
+
+Use a temporary persistent profile for a single run:
+
+```bash
+human-browser-recorder --fresh-profile
+```
+
+Force bundled Chromium instead of Chrome:
+
+```bash
+human-browser-recorder --browser-channel chromium
+```
+
 Start from a specific page:
 
 ```bash

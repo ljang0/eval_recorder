@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from playwright.sync_api import sync_playwright
 DEFAULT_START_URL = "about:blank"
 DEFAULT_VIEWPORT = (1280, 900)
 RUN_ID_PATTERN = re.compile(r"^run_(\d{4})(?:$|_.+)")
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 STEALTH_INIT_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
@@ -76,6 +77,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Task name used in the output folder and metadata. If omitted, a terminal prompt appears.",
     )
     parser.add_argument(
+        "--browser-channel",
+        choices=("chrome", "chromium"),
+        default="chrome",
+        help="Browser channel to launch (default: chrome)",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        help="Persistent browser profile directory to use for a more normal browser session.",
+    )
+    parser.add_argument(
+        "--fresh-profile",
+        action="store_true",
+        help="Use a temporary persistent profile for this run instead of a clean incognito-style context.",
+    )
+    parser.add_argument(
         "--show-trace",
         action="store_true",
         help="Open the saved trace in Playwright Trace Viewer after recording",
@@ -96,6 +112,9 @@ def parse_args() -> argparse.Namespace:
         if args.start_url != DEFAULT_START_URL:
             parser.error("use either the positional URL or --start-url, not both")
         args.start_url = args.url
+
+    if args.profile_dir and args.fresh_profile:
+        parser.error("use either --profile-dir or --fresh-profile, not both")
 
     return args
 
@@ -146,6 +165,9 @@ def save_metadata(
     end_time: str,
     start_url: str,
     viewport: tuple[int, int],
+    browser_channel: str,
+    profile_mode: str,
+    profile_dir: str | None,
 ) -> Path:
     """Write run metadata next to the trace archive."""
     metadata = {
@@ -154,29 +176,101 @@ def save_metadata(
         "start_time": start_time,
         "end_time": end_time,
         "start_url": start_url,
-        "browser": "chromium",
+        "browser": browser_channel,
         "viewport": list(viewport),
+        "profile_mode": profile_mode,
+        "profile_dir": profile_dir,
     }
     metadata_path = run_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return metadata_path
 
 
-def launch_browser(playwright):
-    """Launch Chrome when available and otherwise fall back to Chromium."""
-    launch_kwargs = {
+def browser_launch_kwargs() -> dict:
+    """Shared browser launch options."""
+    return {
         "headless": False,
         "args": ["--disable-blink-features=AutomationControlled"],
     }
-    try:
-        browser = playwright.chromium.launch(channel="chrome", **launch_kwargs)
-        print("Browser channel: chrome")
-        return browser
-    except PlaywrightError as exc:
-        print(f"Chrome launch unavailable ({exc}). Falling back to bundled Chromium.")
-        browser = playwright.chromium.launch(**launch_kwargs)
-        print("Browser channel: chromium")
-        return browser
+
+
+def apply_context_defaults(context) -> None:
+    """Apply shared browser-context tweaks."""
+    context.add_init_script(STEALTH_INIT_SCRIPT)
+
+
+def launch_browser(playwright, browser_channel: str):
+    """Launch a browser for an ephemeral incognito-style context."""
+    launch_kwargs = browser_launch_kwargs()
+    if browser_channel == "chrome":
+        try:
+            browser = playwright.chromium.launch(channel="chrome", **launch_kwargs)
+            print("Browser channel: chrome")
+            return browser
+        except PlaywrightError as exc:
+            print(f"Chrome launch unavailable ({exc}). Falling back to bundled Chromium.")
+
+    browser = playwright.chromium.launch(**launch_kwargs)
+    print("Browser channel: chromium")
+    return browser
+
+
+def launch_context(playwright, args: argparse.Namespace):
+    """Launch either an ephemeral context or a persistent-profile context."""
+    viewport_config = {"width": args.viewport[0], "height": args.viewport[1]}
+    temp_profile_dir = None
+
+    if args.profile_dir or args.fresh_profile:
+        if args.profile_dir:
+            user_data_dir = Path(args.profile_dir).expanduser().resolve()
+            user_data_dir.mkdir(parents=True, exist_ok=True)
+            profile_dir = str(user_data_dir)
+            profile_mode = "persistent"
+        else:
+            temp_profile_dir = tempfile.TemporaryDirectory(prefix="eval-recorder-profile-")
+            profile_dir = temp_profile_dir.name
+            profile_mode = "fresh-persistent"
+
+        launch_kwargs = {
+            **browser_launch_kwargs(),
+            "viewport": viewport_config,
+            "locale": "en-US",
+            "color_scheme": "light",
+        }
+
+        if args.browser_channel == "chrome":
+            try:
+                context = playwright.chromium.launch_persistent_context(
+                    profile_dir,
+                    channel="chrome",
+                    **launch_kwargs,
+                )
+                print("Browser channel: chrome")
+            except PlaywrightError as exc:
+                print(f"Chrome launch unavailable ({exc}). Falling back to bundled Chromium.")
+                context = playwright.chromium.launch_persistent_context(
+                    profile_dir,
+                    **launch_kwargs,
+                )
+                print("Browser channel: chromium")
+        else:
+            context = playwright.chromium.launch_persistent_context(
+                profile_dir,
+                **launch_kwargs,
+            )
+            print("Browser channel: chromium")
+
+        apply_context_defaults(context)
+        return None, context, profile_mode, profile_dir, temp_profile_dir
+
+    browser = launch_browser(playwright, args.browser_channel)
+    context = browser.new_context(
+        viewport=viewport_config,
+        locale="en-US",
+        color_scheme="light",
+    )
+    apply_context_defaults(context)
+    return browser, context, "ephemeral", None, temp_profile_dir
 
 
 def open_trace_viewer(trace_path: Path) -> None:
@@ -239,8 +333,11 @@ def main() -> int:
     browser = None
     context = None
     playwright = None
+    temp_profile_dir = None
     trace_saved = False
     exit_code = 0
+    profile_mode = "ephemeral"
+    profile_dir_for_metadata = None
 
     print("Human Browser Trajectory Recorder")
     print()
@@ -251,6 +348,12 @@ def main() -> int:
     print()
     print("A browser window will open.")
     print("Use it normally.")
+    if args.profile_dir:
+        print(f"Profile mode: persistent ({Path(args.profile_dir).expanduser().resolve()})")
+    elif args.fresh_profile:
+        print("Profile mode: fresh persistent profile")
+    else:
+        print("Profile mode: ephemeral clean context")
     if "google." in args.start_url:
         print("Note: Google may still challenge automated browsers. Starting from about:blank is safer.")
     print()
@@ -259,13 +362,9 @@ def main() -> int:
 
     try:
         playwright = sync_playwright().start()
-        browser = launch_browser(playwright)
-        context = browser.new_context(
-            viewport={"width": args.viewport[0], "height": args.viewport[1]},
-            locale="en-US",
-            color_scheme="light",
+        browser, context, profile_mode, profile_dir_for_metadata, temp_profile_dir = launch_context(
+            playwright, args
         )
-        context.add_init_script(STEALTH_INIT_SCRIPT)
 
         # Record screenshots, DOM snapshots, and sources so the trace can be replayed later.
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
@@ -306,6 +405,9 @@ def main() -> int:
             end_time=end_time,
             start_url=args.start_url,
             viewport=args.viewport,
+            browser_channel=args.browser_channel,
+            profile_mode=profile_mode,
+            profile_dir=profile_dir_for_metadata,
         )
 
         if context is not None:
@@ -325,6 +427,8 @@ def main() -> int:
                 playwright.stop()
             except PlaywrightError:
                 pass
+        if temp_profile_dir is not None:
+            temp_profile_dir.cleanup()
 
     if trace_saved:
         print(f"Trace saved to: {trace_path}")
