@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 DEFAULT_START_URL = "about:blank"
 DEFAULT_VIEWPORT = (1280, 900)
 RUN_ID_PATTERN = re.compile(r"^run_(\d{4})(?:$|_.+)")
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 STEALTH_INIT_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });

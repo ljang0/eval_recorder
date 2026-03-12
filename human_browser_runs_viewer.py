@@ -6,17 +6,21 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from zipfile import ZipFile
 
 
-VERSION = "0.3.0"
-RUN_ID_PATTERN = r"^run_(\d+)(?:$|_.+)"
+VERSION = "0.4.0"
+PAGE_FRAME_PATTERN = re.compile(r"^resources/page@.+-(\d+)\.jpe?g$")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,6 +98,7 @@ def list_runs(runs_dir: Path) -> list[dict]:
                 "end_time": metadata.get("end_time", ""),
                 "start_url": metadata.get("start_url", ""),
                 "trace_exists": trace_path.exists(),
+                "mp4_exists": (run_dir / "stitched.mp4").exists(),
                 "trace_size_mb": round(trace_path.stat().st_size / (1024 * 1024), 2)
                 if trace_path.exists()
                 else None,
@@ -104,6 +109,97 @@ def list_runs(runs_dir: Path) -> list[dict]:
 
 def open_trace_viewer(trace_path: Path) -> None:
     subprocess.Popen([sys.executable, "-m", "playwright", "show-trace", str(trace_path)])
+
+
+def ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def collect_trace_frames(trace_path: Path) -> list[tuple[str, int]]:
+    frames: list[tuple[str, int]] = []
+    with ZipFile(trace_path) as trace_zip:
+        for name in trace_zip.namelist():
+            match = PAGE_FRAME_PATTERN.fullmatch(name)
+            if match:
+                frames.append((name, int(match.group(1))))
+    frames.sort(key=lambda item: item[1])
+    return frames
+
+
+def build_frame_durations(timestamps: list[int]) -> list[float]:
+    if len(timestamps) <= 1:
+        return [1.0]
+
+    durations: list[float] = []
+    for current, nxt in zip(timestamps, timestamps[1:]):
+        delta_seconds = max(0.04, min((nxt - current) / 1000.0, 1.0))
+        durations.append(delta_seconds)
+    durations.append(max(durations[-1], 0.5))
+    return durations
+
+
+def export_stitched_video(run_dir: Path) -> Path:
+    if not ffmpeg_available():
+        raise RuntimeError("ffmpeg is not installed or not on PATH")
+
+    trace_path = run_dir / "trace.zip"
+    if not trace_path.exists():
+        raise FileNotFoundError("trace.zip not found")
+
+    output_path = run_dir / "stitched.mp4"
+    if output_path.exists() and output_path.stat().st_mtime >= trace_path.stat().st_mtime:
+        return output_path
+
+    frames = collect_trace_frames(trace_path)
+    if not frames:
+        raise RuntimeError("No page frame images found in trace.zip")
+
+    with tempfile.TemporaryDirectory(prefix="eval-recorder-video-") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        manifest_path = temp_dir / "frames.txt"
+        timestamps = [timestamp for _, timestamp in frames]
+        durations = build_frame_durations(timestamps)
+
+        with ZipFile(trace_path) as trace_zip:
+            extracted_frames: list[Path] = []
+            for index, (frame_name, _timestamp) in enumerate(frames, start=1):
+                suffix = Path(frame_name).suffix or ".jpeg"
+                extracted_path = temp_dir / f"frame_{index:05d}{suffix}"
+                extracted_path.write_bytes(trace_zip.read(frame_name))
+                extracted_frames.append(extracted_path)
+
+        manifest_lines: list[str] = []
+        for frame_path, duration in zip(extracted_frames, durations):
+            manifest_lines.append(f"file '{frame_path.as_posix()}'")
+            manifest_lines.append(f"duration {duration:.3f}")
+        manifest_lines.append(f"file '{extracted_frames[-1].as_posix()}'")
+        manifest_path.write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(manifest_path),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-vf",
+            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            str(output_path),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "ffmpeg export failed")
+
+    return output_path
 
 
 def render_index(runs_dir: Path, base_url: str) -> str:
@@ -137,6 +233,7 @@ def render_index(runs_dir: Path, base_url: str) -> str:
                 f"<a class='button' href='/open?run={encoded_folder}'>Open CLI Viewer</a>"
                 f"<a class='button secondary' href='{html.escape(trace_viewer_url)}' "
                 "target='_blank' rel='noreferrer'>Open Web Viewer</a>"
+                f"<a class='button secondary' href='/video?run={encoded_folder}'>Download MP4</a>"
                 f"<a class='button secondary' href='/files/{encoded_folder}/trace.zip'>Download Trace</a>"
             )
 
@@ -154,6 +251,7 @@ def render_index(runs_dir: Path, base_url: str) -> str:
                 <div><span class="label">End time</span><span>{html.escape(run["end_time"] or "n/a")}</span></div>
                 <div><span class="label">Start URL</span><span>{start_url_html}</span></div>
                 <div><span class="label">Trace</span><span>{format_trace_label(run["trace_exists"], run["trace_size_mb"])}</span></div>
+                <div><span class="label">Video export</span><span>{format_video_label(run["trace_exists"], run["mp4_exists"])}</span></div>
               </div>
               <div class="actions">{trace_actions}</div>
             </section>
@@ -175,6 +273,14 @@ def format_trace_label(trace_exists: bool, trace_size_mb: float | None) -> str:
     if trace_size_mb is None:
         return "present"
     return f"present · {trace_size_mb} MB"
+
+
+def format_video_label(trace_exists: bool, mp4_exists: bool) -> str:
+    if not trace_exists:
+        return "<span class='muted'>unavailable</span>"
+    if not ffmpeg_available():
+        return "<span class='muted'>ffmpeg required</span>"
+    return "ready" if mp4_exists else "generate on demand"
 
 
 def page_html(content: str, base_url: str, runs_dir: Path) -> str:
@@ -309,7 +415,7 @@ def page_html(content: str, base_url: str, runs_dir: Path) -> str:
 <body>
   <main>
     <h1>Human Browser Runs</h1>
-    <p>Local dashboard for recorded trajectories. Use <code>Open CLI Viewer</code> to launch Playwright's desktop trace viewer, or <code>Open Web Viewer</code> to try the browser-based Playwright viewer against this local server.</p>
+    <p>Local dashboard for recorded trajectories. Page console errors in a trace usually come from the recorded website, not from the viewer. Use <code>Open CLI Viewer</code> to launch Playwright's desktop trace viewer, <code>Open Web Viewer</code> for the browser-based viewer, or <code>Download MP4</code> to stitch the trace frames into a local video.</p>
     <div class="toolbar">
       <span>Runs directory: <code>{html.escape(str(runs_dir))}</code></span>
       <span>Viewer URL: <code>{html.escape(base_url)}</code></span>
@@ -332,6 +438,10 @@ class RunsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/open":
             query = urllib.parse.parse_qs(parsed.query)
             self.handle_open_trace(query.get("run", [""])[0])
+            return
+        if parsed.path == "/video":
+            query = urllib.parse.parse_qs(parsed.query)
+            self.handle_video_export(query.get("run", [""])[0])
             return
         if parsed.path.startswith("/files/"):
             self.handle_static_file(parsed.path)
@@ -372,6 +482,22 @@ class RunsHandler(BaseHTTPRequestHandler):
         self.send_header("Location", "/")
         self.end_headers()
 
+    def handle_video_export(self, run_name: str) -> None:
+        try:
+            run_dir = self.safe_run_dir(run_name)
+            video_path = export_stitched_video(run_dir)
+        except PermissionError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Invalid run path")
+            return
+        except FileNotFoundError as exc:
+            self.send_error(HTTPStatus.NOT_FOUND, str(exc))
+            return
+        except RuntimeError as exc:
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        self.send_file(video_path, "video/mp4", as_attachment=True)
+
     def handle_static_file(self, path: str, include_body: bool = True) -> None:
         parts = path.split("/")
         if len(parts) != 4:
@@ -389,14 +515,7 @@ class RunsHandler(BaseHTTPRequestHandler):
             return
 
         content_type = "application/zip" if file_name.endswith(".zip") else "application/json"
-        data = file_path.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        if include_body:
-            self.wfile.write(data)
+        self.send_file(file_path, content_type, include_body=include_body)
 
     def safe_run_dir(self, run_name: str) -> Path:
         decoded = urllib.parse.unquote(run_name)
@@ -414,6 +533,24 @@ class RunsHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if include_body:
             self.wfile.write(encoded)
+
+    def send_file(
+        self,
+        file_path: Path,
+        content_type: str,
+        include_body: bool = True,
+        as_attachment: bool = False,
+    ) -> None:
+        data = file_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        if as_attachment:
+            self.send_header("Content-Disposition", f'attachment; filename="{file_path.name}"')
+        self.end_headers()
+        if include_body:
+            self.wfile.write(data)
 
 
 def build_handler(runs_dir: Path, base_url: str):

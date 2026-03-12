@@ -89,6 +89,7 @@ That opens a local page with:
 
 - `Open CLI Viewer` to launch `playwright show-trace`
 - `Open Web Viewer` to try Playwright's browser-based viewer against the local trace file
+- `Download MP4` to stitch the trace frames into a local `stitched.mp4`
 - `Download Trace` to save the raw `trace.zip`
 
 ## Build
