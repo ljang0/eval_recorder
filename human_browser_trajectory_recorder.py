@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from playwright.sync_api import sync_playwright
 DEFAULT_START_URL = "https://google.com"
 DEFAULT_VIEWPORT = (1280, 900)
 RUN_ID_PATTERN = re.compile(r"^run_(\d{4})$")
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
 def timestamp_now() -> str:
@@ -65,6 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory used to store recorded runs (default: runs)",
     )
     parser.add_argument(
+        "--task-name",
+        help="Task name used in the output folder and metadata. If omitted, a prompt appears.",
+    )
+    parser.add_argument(
         "--show-trace",
         action="store_true",
         help="Open the saved trace in Playwright Trace Viewer after recording",
@@ -95,6 +100,14 @@ def ensure_runs_dir(runs_dir: Path) -> Path:
     return runs_dir
 
 
+def slugify_task_name(task_name: str, max_length: int = 80) -> str:
+    """Convert a human-readable task name into a filesystem-safe slug."""
+    normalized = unicodedata.normalize("NFKD", task_name)
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_text.lower()).strip("-")
+    return slug[:max_length].rstrip("-") or "task"
+
+
 def generate_run_id(runs_dir: Path) -> str:
     """Return the next run ID using a zero-padded sequence."""
     highest_run_number = 0
@@ -109,11 +122,12 @@ def generate_run_id(runs_dir: Path) -> str:
     return f"run_{highest_run_number + 1:04d}"
 
 
-def create_run_folder(runs_dir: Path) -> tuple[str, Path]:
+def create_run_folder(runs_dir: Path, task_name: str) -> tuple[str, Path]:
     """Create a new run folder and return the run ID with its path."""
     ensure_runs_dir(runs_dir)
     run_id = generate_run_id(runs_dir)
-    run_dir = runs_dir / run_id
+    task_slug = slugify_task_name(task_name)
+    run_dir = runs_dir / f"{run_id}_{task_slug}"
     run_dir.mkdir(parents=False, exist_ok=False)
     return run_id, run_dir
 
@@ -121,6 +135,7 @@ def create_run_folder(runs_dir: Path) -> tuple[str, Path]:
 def save_metadata(
     run_dir: Path,
     run_id: str,
+    task_name: str,
     start_time: str,
     end_time: str,
     start_url: str,
@@ -129,6 +144,7 @@ def save_metadata(
     """Write run metadata next to the trace archive."""
     metadata = {
         "run_id": run_id,
+        "task_name": task_name,
         "start_time": start_time,
         "end_time": end_time,
         "start_url": start_url,
@@ -158,10 +174,80 @@ def open_trace_viewer(trace_path: Path) -> None:
     subprocess.Popen([sys.executable, "-m", "playwright", "show-trace", str(trace_path)])
 
 
+def prompt_for_task_name() -> str | None:
+    """Ask the user for a task name with a small dialog, or fall back to the terminal."""
+    try:
+        import tkinter as tk
+        from tkinter import simpledialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+
+        while True:
+            task_name = simpledialog.askstring(
+                "Human Browser Trajectory Recorder",
+                "Name this task / output folder:",
+                parent=root,
+            )
+            if task_name is None:
+                root.destroy()
+                return None
+            task_name = task_name.strip()
+            if task_name:
+                root.destroy()
+                return task_name
+    except Exception:
+        pass
+
+    while True:
+        try:
+            task_name = input("Task name for this run: ").strip()
+        except EOFError:
+            return None
+        if task_name:
+            return task_name
+        print("Task name cannot be empty.")
+
+
+def wait_for_stop_signal() -> None:
+    """Block until the user presses ESC globally, with a terminal fallback."""
+    try:
+        from pynput import keyboard
+    except ImportError:
+        print("Global ESC capture is unavailable because pynput is not installed.")
+        print("Press ENTER here to finish the task.")
+        input()
+        return
+
+    print("Press ESC anywhere to finish the task.")
+    print("Press Ctrl+C in the terminal if you need to interrupt early.")
+    print()
+
+    def on_press(key):
+        if key == keyboard.Key.esc:
+            return False
+        return True
+
+    try:
+        with keyboard.Listener(on_press=on_press) as listener:
+            listener.join()
+    except Exception as exc:
+        print(f"Warning: could not start the global ESC listener: {exc}")
+        print("Falling back to ENTER in the terminal.")
+        input()
+
+
 def main() -> int:
     args = parse_args()
     runs_dir = Path(args.runs_dir).expanduser().resolve()
-    run_id, run_dir = create_run_folder(runs_dir)
+    task_name = args.task_name.strip() if args.task_name else prompt_for_task_name()
+    if not task_name:
+        print("Recording cancelled before launch.")
+        return 1
+
+    run_id, run_dir = create_run_folder(runs_dir, task_name)
     trace_path = run_dir / "trace.zip"
     start_time = timestamp_now()
     end_time = start_time
@@ -173,6 +259,7 @@ def main() -> int:
 
     print("Human Browser Trajectory Recorder")
     print()
+    print(f"Task name: {task_name}")
     print(f"Start URL: {args.start_url}")
     print(f"Run ID: {run_id}")
     print(f"Run folder: {run_dir}")
@@ -180,8 +267,7 @@ def main() -> int:
     print("A browser window will open.")
     print("Use it normally.")
     print()
-    print("Press ENTER here when you finish the task.")
-    print("Press Ctrl+C if you need to interrupt early.")
+    print("Press ESC anywhere when you finish the task.")
     print()
 
     try:
@@ -199,7 +285,7 @@ def main() -> int:
             print(f"Warning: could not fully load {args.start_url}: {exc}")
         page.bring_to_front()
 
-        input()
+        wait_for_stop_signal()
     except EOFError:
         print()
         print("EOF received. Finalizing the trace...")
@@ -223,6 +309,7 @@ def main() -> int:
         save_metadata(
             run_dir=run_dir,
             run_id=run_id,
+            task_name=task_name,
             start_time=start_time,
             end_time=end_time,
             start_url=args.start_url,
